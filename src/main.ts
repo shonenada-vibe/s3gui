@@ -28,6 +28,11 @@ let presignedUrl = "";
 let errors: string[] = [];
 let errorScrollIndex = 0;
 let isLoading = false;
+let viewMode: "list" | "grid" = "list";
+let thumbnailCache: Map<string, string> = new Map();
+let hasMoreData = false;
+let isLoadingMore = false;
+let allGridItems: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[] = [];
 
 // DOM Elements
 const profilesList = document.getElementById("profiles-list")!;
@@ -36,10 +41,17 @@ const bucketSelect = document.getElementById("bucket-select") as HTMLSelectEleme
 const currentPathEl = document.getElementById("current-path")!;
 const goBackBtn = document.getElementById("go-back-btn") as HTMLButtonElement;
 const objectList = document.getElementById("object-list")!;
-const emptyState = document.getElementById("empty-state")!;
+const objectGrid = document.getElementById("object-grid")!;
+const listView = document.getElementById("list-view")!;
+const gridView = document.getElementById("grid-view")!;
+const emptyStateList = document.getElementById("empty-state-list")!;
+const emptyStateGrid = document.getElementById("empty-state-grid")!;
+const listViewBtn = document.getElementById("list-view-btn")!;
+const gridViewBtn = document.getElementById("grid-view-btn")!;
 const prevPageBtn = document.getElementById("prev-page-btn") as HTMLButtonElement;
 const nextPageBtn = document.getElementById("next-page-btn") as HTMLButtonElement;
 const pageInfo = document.getElementById("page-info")!;
+const paginationEl = document.querySelector(".pagination") as HTMLElement;
 const uploadFilesBtn = document.getElementById("upload-files-btn")!;
 const uploadFolderBtn = document.getElementById("upload-folder-btn")!;
 const createBucketBtn = document.getElementById("create-bucket-btn")!;
@@ -206,11 +218,14 @@ async function selectBucket(name: string) {
   await loadObjects();
 }
 
-async function loadObjects() {
+async function loadObjects(append = false) {
   if (!currentProfileId || !currentBucket) return;
   
   try {
-    setLoading(true);
+    if (!append) {
+      setLoading(true);
+      allGridItems = [];
+    }
     const result = await api.listObjects(
       currentProfileId,
       currentBucket,
@@ -221,21 +236,23 @@ async function loadObjects() {
     objects = result.objects;
     commonPrefixes = result.common_prefixes;
     continuationToken = result.next_continuation_token || null;
+    hasMoreData = result.is_truncated;
     
-    renderObjects();
+    renderObjects(append);
     updatePagination(result.is_truncated);
   } catch (err) {
     showError(`Failed to load objects: ${err}`);
   } finally {
     setLoading(false);
+    isLoadingMore = false;
   }
 }
 
-function renderObjects() {
+function renderObjects(append = false) {
   currentPathEl.textContent = currentPrefix ? `/ ${currentPrefix}` : "/";
   goBackBtn.disabled = !currentPrefix;
   
-  const allItems = [
+  const newItems = [
     ...commonPrefixes.map(prefix => ({
       key: prefix,
       size: 0,
@@ -246,13 +263,32 @@ function renderObjects() {
     ...objects.filter(o => !o.is_folder),
   ];
   
+  if (viewMode === "list") {
+    paginationEl.classList.remove("hidden");
+    renderListView(newItems);
+  } else {
+    paginationEl.classList.add("hidden");
+    if (append) {
+      allGridItems = [...allGridItems, ...newItems];
+      appendGridItems(newItems);
+    } else {
+      allGridItems = newItems;
+      renderGridView(newItems);
+    }
+  }
+}
+
+function renderListView(allItems: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[]) {
+  listView.classList.remove("hidden");
+  gridView.classList.add("hidden");
+  
   if (allItems.length === 0) {
     objectList.innerHTML = "";
-    emptyState.style.display = "flex";
+    emptyStateList.style.display = "flex";
     return;
   }
   
-  emptyState.style.display = "none";
+  emptyStateList.style.display = "none";
   
   objectList.innerHTML = allItems.map(obj => {
     const name = obj.is_folder 
@@ -281,6 +317,262 @@ function renderObjects() {
       </tr>
     `;
   }).join("");
+}
+
+function renderGridView(allItems: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[]) {
+  listView.classList.add("hidden");
+  gridView.classList.remove("hidden");
+  
+  if (allItems.length === 0) {
+    objectGrid.innerHTML = "";
+    emptyStateGrid.style.display = "flex";
+    return;
+  }
+  
+  emptyStateGrid.style.display = "none";
+  
+  objectGrid.innerHTML = allItems.map(obj => {
+    const name = obj.is_folder 
+      ? obj.key.replace(currentPrefix, "").replace(/\/$/, "")
+      : obj.key.replace(currentPrefix, "");
+    const size = obj.is_folder ? "-" : formatSize(obj.size);
+    const isPreviewable = isMediaFile(obj.key);
+    const isVideo = isVideoFile(obj.key);
+    const cacheKey = `${currentProfileId}:${currentBucket}:${obj.key}`;
+    const cachedThumb = thumbnailCache.get(cacheKey);
+    
+    let thumbnailContent: string;
+    if (obj.is_folder) {
+      thumbnailContent = `<span class="placeholder">📁</span>`;
+    } else if (cachedThumb) {
+      thumbnailContent = isVideo 
+        ? `<video src="${cachedThumb}" preload="metadata" muted></video><span class="video-icon">▶ VIDEO</span>`
+        : `<img src="${cachedThumb}" alt="${escapeHtml(name)}">`;
+    } else if (isPreviewable) {
+      thumbnailContent = `<div class="loading-spinner"></div>`;
+    } else {
+      thumbnailContent = `<span class="placeholder">📄</span>`;
+    }
+    
+    return `
+      <div class="grid-item ${obj.is_folder ? "folder" : ""}" data-key="${escapeHtml(obj.key)}" data-is-folder="${obj.is_folder}" data-previewable="${isPreviewable}">
+        <div class="grid-item-thumbnail">
+          ${thumbnailContent}
+        </div>
+        <div class="grid-item-info">
+          <div class="grid-item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+          <div class="grid-item-size">${size}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  
+  // Set up cached video thumbnails to show first frame
+  objectGrid.querySelectorAll(".grid-item-thumbnail video").forEach((video) => {
+    const videoEl = video as HTMLVideoElement;
+    videoEl.onloadedmetadata = () => {
+      videoEl.currentTime = 0.1;
+    };
+  });
+  
+  // Load thumbnails for previewable items
+  loadGridThumbnails(allItems.filter(item => !item.is_folder && isMediaFile(item.key)));
+  
+  // Set up infinite scroll sentinel
+  setupInfiniteScroll();
+}
+
+function createGridItemHtml(obj: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }): string {
+  const name = obj.is_folder 
+    ? obj.key.replace(currentPrefix, "").replace(/\/$/, "")
+    : obj.key.replace(currentPrefix, "");
+  const size = obj.is_folder ? "-" : formatSize(obj.size);
+  const isPreviewable = isMediaFile(obj.key);
+  const isVideo = isVideoFile(obj.key);
+  const cacheKey = `${currentProfileId}:${currentBucket}:${obj.key}`;
+  const cachedThumb = thumbnailCache.get(cacheKey);
+  
+  let thumbnailContent: string;
+  if (obj.is_folder) {
+    thumbnailContent = `<span class="placeholder">📁</span>`;
+  } else if (cachedThumb) {
+    thumbnailContent = isVideo 
+      ? `<video src="${cachedThumb}" preload="metadata" muted></video><span class="video-icon">▶ VIDEO</span>`
+      : `<img src="${cachedThumb}" alt="${escapeHtml(name)}">`;
+  } else if (isPreviewable) {
+    thumbnailContent = `<div class="loading-spinner"></div>`;
+  } else {
+    thumbnailContent = `<span class="placeholder">📄</span>`;
+  }
+  
+  return `
+    <div class="grid-item ${obj.is_folder ? "folder" : ""}" data-key="${escapeHtml(obj.key)}" data-is-folder="${obj.is_folder}" data-previewable="${isPreviewable}">
+      <div class="grid-item-thumbnail">
+        ${thumbnailContent}
+      </div>
+      <div class="grid-item-info">
+        <div class="grid-item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+        <div class="grid-item-size">${size}</div>
+      </div>
+    </div>
+  `;
+}
+
+function appendGridItems(items: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[]) {
+  // Remove existing sentinel
+  const existingSentinel = objectGrid.querySelector(".infinite-scroll-sentinel");
+  if (existingSentinel) {
+    existingSentinel.remove();
+  }
+  
+  // Append new items
+  const fragment = document.createDocumentFragment();
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = items.map(obj => createGridItemHtml(obj)).join("");
+  
+  while (tempDiv.firstChild) {
+    fragment.appendChild(tempDiv.firstChild);
+  }
+  objectGrid.appendChild(fragment);
+  
+  // Set up video thumbnails for new items
+  items.forEach(item => {
+    if (isVideoFile(item.key)) {
+      const gridItem = objectGrid.querySelector(`[data-key="${CSS.escape(item.key)}"]`);
+      if (gridItem) {
+        const video = gridItem.querySelector("video");
+        if (video) {
+          video.onloadedmetadata = () => {
+            video.currentTime = 0.1;
+          };
+        }
+      }
+    }
+  });
+  
+  // Load thumbnails for new previewable items
+  loadGridThumbnails(items.filter(item => !item.is_folder && isMediaFile(item.key)));
+  
+  // Re-setup infinite scroll sentinel
+  setupInfiniteScroll();
+}
+
+let infiniteScrollObserver: IntersectionObserver | null = null;
+
+function setupInfiniteScroll() {
+  // Clean up existing observer
+  if (infiniteScrollObserver) {
+    infiniteScrollObserver.disconnect();
+  }
+  
+  // Remove existing sentinel
+  const existingSentinel = objectGrid.querySelector(".infinite-scroll-sentinel");
+  if (existingSentinel) {
+    existingSentinel.remove();
+  }
+  
+  // Only add sentinel if there's more data
+  if (!hasMoreData) return;
+  
+  // Create sentinel element
+  const sentinel = document.createElement("div");
+  sentinel.className = "infinite-scroll-sentinel";
+  objectGrid.appendChild(sentinel);
+  
+  // Create observer
+  infiniteScrollObserver = new IntersectionObserver((entries) => {
+    const entry = entries[0];
+    if (entry.isIntersecting && hasMoreData && !isLoadingMore && !isLoading) {
+      loadMoreGridItems();
+    }
+  }, {
+    root: gridView,
+    rootMargin: "200px",
+    threshold: 0
+  });
+  
+  infiniteScrollObserver.observe(sentinel);
+}
+
+async function loadMoreGridItems() {
+  if (!continuationToken || isLoadingMore) return;
+  
+  isLoadingMore = true;
+  tokenHistory.push(continuationToken);
+  await loadObjects(true);
+}
+
+async function loadGridThumbnails(items: { key: string }[]) {
+  if (!currentProfileId || !currentBucket) return;
+  
+  for (const item of items) {
+    const cacheKey = `${currentProfileId}:${currentBucket}:${item.key}`;
+    if (thumbnailCache.has(cacheKey)) continue;
+    
+    try {
+      const previewData = await api.getObjectPreview(currentProfileId, currentBucket, item.key);
+      const dataUrl = `data:${previewData.content_type};base64,${previewData.data}`;
+      thumbnailCache.set(cacheKey, dataUrl);
+      
+      // Update the grid item if still visible
+      const gridItem = objectGrid.querySelector(`[data-key="${CSS.escape(item.key)}"]`);
+      if (gridItem) {
+        const thumbContainer = gridItem.querySelector(".grid-item-thumbnail");
+        if (thumbContainer) {
+          const isVideo = previewData.content_type.startsWith("video/");
+          if (isVideo) {
+            const video = document.createElement("video");
+            video.src = dataUrl;
+            video.muted = true;
+            video.preload = "metadata";
+            video.onloadedmetadata = () => {
+              video.currentTime = 0.1; // Seek to first frame
+            };
+            thumbContainer.innerHTML = "";
+            thumbContainer.appendChild(video);
+            const icon = document.createElement("span");
+            icon.className = "video-icon";
+            icon.textContent = "▶ VIDEO";
+            thumbContainer.appendChild(icon);
+          } else {
+            thumbContainer.innerHTML = `<img src="${dataUrl}" alt="">`;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to load thumbnail for ${item.key}:`, err);
+      // Show placeholder on error
+      const gridItem = objectGrid.querySelector(`[data-key="${CSS.escape(item.key)}"]`);
+      if (gridItem) {
+        const thumbContainer = gridItem.querySelector(".grid-item-thumbnail");
+        if (thumbContainer) {
+          thumbContainer.innerHTML = `<span class="placeholder">📄</span>`;
+        }
+      }
+    }
+  }
+}
+
+function isVideoFile(key: string): boolean {
+  const ext = key.toLowerCase().split(".").pop();
+  return ["mp4", "webm", "ogg", "mov", "avi"].includes(ext || "");
+}
+
+function setViewMode(mode: "list" | "grid") {
+  const previousMode = viewMode;
+  viewMode = mode;
+  listViewBtn.classList.toggle("active", mode === "list");
+  gridViewBtn.classList.toggle("active", mode === "grid");
+  
+  // When switching to grid mode, reset to first page and reload for infinite scroll
+  if (mode === "grid" && previousMode === "list") {
+    continuationToken = null;
+    tokenHistory = [];
+    allGridItems = [];
+    loadObjects();
+  } else {
+    renderObjects();
+  }
 }
 
 function updatePagination(hasMore: boolean) {
@@ -584,9 +876,13 @@ async function previewObject(key: string) {
       img.src = dataUrl;
       container.appendChild(img);
     } else if (previewData.content_type.startsWith("video/")) {
-      console.log("[Preview] Creating video element");
+      console.log("[Preview] Creating video element with play button");
+      
+      // Create wrapper for video and play button
+      const wrapper = document.createElement("div");
+      wrapper.className = "video-preview-wrapper";
+      
       const video = document.createElement("video");
-      video.controls = true;
       video.style.maxWidth = "100%";
       video.style.maxHeight = "60vh";
       video.onloadeddata = () => console.log("[Preview] Video loaded successfully");
@@ -595,7 +891,24 @@ async function previewObject(key: string) {
         container.innerHTML = `<div class="loading">Failed to display video</div>`;
       };
       video.src = dataUrl;
-      container.appendChild(video);
+      
+      // Create play button overlay
+      const playButton = document.createElement("div");
+      playButton.className = "video-play-button";
+      playButton.innerHTML = `<svg width="64" height="64" viewBox="0 0 16 16" fill="white">
+        <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+        <path d="M6.271 5.055a.5.5 0 0 1 .52.038l3.5 2.5a.5.5 0 0 1 0 .814l-3.5 2.5A.5.5 0 0 1 6 10.5v-5a.5.5 0 0 1 .271-.445z"/>
+      </svg>`;
+      
+      playButton.addEventListener("click", () => {
+        playButton.style.display = "none";
+        video.controls = true;
+        video.play();
+      });
+      
+      wrapper.appendChild(video);
+      wrapper.appendChild(playButton);
+      container.appendChild(wrapper);
     } else {
       container.innerHTML = `<div class="loading">Unsupported content type: ${previewData.content_type}</div>`;
     }
@@ -775,6 +1088,10 @@ function setupEventListeners() {
   // Navigation
   goBackBtn.addEventListener("click", goToParent);
   
+  // View mode toggle
+  listViewBtn.addEventListener("click", () => setViewMode("list"));
+  gridViewBtn.addEventListener("click", () => setViewMode("grid"));
+  
   // Object list clicks
   objectList.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
@@ -794,6 +1111,22 @@ function setupEventListeners() {
       previewObject(key);
     } else if (isFolder) {
       navigateToPrefix(key);
+    }
+  });
+  
+  // Object grid clicks
+  objectGrid.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const gridItem = target.closest(".grid-item") as HTMLElement;
+    if (!gridItem) return;
+    
+    const key = gridItem.dataset.key!;
+    const isFolder = gridItem.dataset.isFolder === "true";
+    
+    if (isFolder) {
+      navigateToPrefix(key);
+    } else if (isMediaFile(key)) {
+      previewObject(key);
     }
   });
   

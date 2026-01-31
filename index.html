@@ -79,10 +79,23 @@
           </svg>
           KeepSync
         </button>
+        <div class="toolbar-spacer"></div>
+        <div class="view-toggle">
+          <button id="list-view-btn" class="btn btn-icon active" title="List View">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+            </svg>
+          </button>
+          <button id="grid-view-btn" class="btn btn-icon" title="Grid View">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3z"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
-      <!-- Object List -->
-      <div class="object-list-container">
+      <!-- Object List View -->
+      <div class="object-list-container" id="list-view">
         <table class="object-table" id="object-table">
           <thead>
             <tr>
@@ -96,7 +109,21 @@
             <!-- Object rows will be rendered here -->
           </tbody>
         </table>
-        <div class="empty-state" id="empty-state">
+        <div class="empty-state" id="empty-state-list">
+          <svg width="48" height="48" viewBox="0 0 16 16" fill="currentColor" opacity="0.5">
+            <path d="M14.5 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/>
+            <path d="M5 8a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5A.5.5 0 0 1 5 8z"/>
+          </svg>
+          <p>No objects found</p>
+        </div>
+      </div>
+
+      <!-- Object Grid View -->
+      <div class="object-grid-container hidden" id="grid-view">
+        <div class="object-grid" id="object-grid">
+          <!-- Grid items will be rendered here -->
+        </div>
+        <div class="empty-state" id="empty-state-grid">
           <svg width="48" height="48" viewBox="0 0 16 16" fill="currentColor" opacity="0.5">
             <path d="M14.5 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/>
             <path d="M5 8a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5A.5.5 0 0 1 5 8z"/>
