@@ -303,6 +303,25 @@ impl S3Client {
         Ok(())
     }
 
+    pub async fn create_folder(&self, bucket: &str, key: &str) -> Result<()> {
+        let folder_key = if key.ends_with('/') {
+            key.to_string()
+        } else {
+            format!("{}/", key)
+        };
+
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(&folder_key)
+            .body(ByteStream::from(vec![]))
+            .send()
+            .await
+            .context("Failed to create folder")?;
+
+        Ok(())
+    }
+
     pub async fn upload_folder(
         &self,
         bucket: &str,

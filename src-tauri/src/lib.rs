@@ -27,6 +27,7 @@ pub fn run() {
             list_buckets,
             create_bucket,
             list_objects,
+            create_folder,
             download_object,
             upload_files,
             upload_folder,

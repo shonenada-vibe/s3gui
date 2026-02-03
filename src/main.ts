@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "./api";
@@ -12,6 +13,8 @@ import type {
   SyncProgressPayload,
   SyncCompletedPayload,
   SyncErrorPayload,
+  Task,
+  TaskStatus,
 } from "./types";
 
 // State
@@ -33,17 +36,24 @@ let thumbnailCache: Map<string, string> = new Map();
 let hasMoreData = false;
 let isLoadingMore = false;
 let allGridItems: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[] = [];
+let searchPrefix = "";
+let searchTimeout: number | null = null;
+let tasks: Task[] = [];
+let taskIdCounter = 0;
 
 // DOM Elements
 const profilesList = document.getElementById("profiles-list")!;
 const addProfileBtn = document.getElementById("add-profile-btn")!;
 const bucketSelect = document.getElementById("bucket-select") as HTMLSelectElement;
+const refreshBucketsBtn = document.getElementById("refresh-buckets-btn")!;
 const currentPathEl = document.getElementById("current-path")!;
 const goBackBtn = document.getElementById("go-back-btn") as HTMLButtonElement;
+const refreshObjectsBtn = document.getElementById("refresh-objects-btn")!;
 const objectList = document.getElementById("object-list")!;
 const objectGrid = document.getElementById("object-grid")!;
 const listView = document.getElementById("list-view")!;
 const gridView = document.getElementById("grid-view")!;
+const mainContent = document.querySelector(".main-content")!;
 const emptyStateList = document.getElementById("empty-state-list")!;
 const emptyStateGrid = document.getElementById("empty-state-grid")!;
 const listViewBtn = document.getElementById("list-view-btn")!;
@@ -57,21 +67,32 @@ const uploadFolderBtn = document.getElementById("upload-folder-btn")!;
 const createBucketBtn = document.getElementById("create-bucket-btn")!;
 const syncBtn = document.getElementById("sync-btn")!;
 const keepSyncBtn = document.getElementById("keep-sync-btn")!;
+const createFolderBtn = document.getElementById("create-folder-btn")!;
 const presignedUrlTextarea = document.getElementById("presigned-url") as HTMLTextAreaElement;
 const copyUrlBtn = document.getElementById("copy-url-btn")!;
 const errorListEl = document.getElementById("error-list")!;
 const footer = document.getElementById("footer")!;
 const footerToggle = document.getElementById("footer-toggle")!;
+const searchPrefixInput = document.getElementById("search-prefix") as HTMLInputElement;
+const searchClearBtn = document.getElementById("search-clear-btn")!;
+const taskPanel = document.getElementById("task-panel")!;
+const taskListEl = document.getElementById("task-list")!;
+const clearCompletedBtn = document.getElementById("clear-completed-btn")!;
+const closeTaskPanelBtn = document.getElementById("close-task-panel-btn")!;
+const taskProgressText = document.getElementById("task-progress-text")!;
+const taskProgressFill = document.getElementById("task-progress-fill")!;
 
 // Modals
 const profileModal = document.getElementById("profile-modal")!;
 const bucketModal = document.getElementById("bucket-modal")!;
+const folderModal = document.getElementById("folder-modal")!;
 const deleteModal = document.getElementById("delete-modal")!;
 const previewModal = document.getElementById("preview-modal")!;
 
 // Forms
 const profileForm = document.getElementById("profile-form") as HTMLFormElement;
 const bucketForm = document.getElementById("bucket-form") as HTMLFormElement;
+const folderForm = document.getElementById("folder-form") as HTMLFormElement;
 
 // Delete confirmation state
 let deleteCallback: (() => Promise<void>) | null = null;
@@ -215,6 +236,9 @@ async function selectBucket(name: string) {
   currentPrefix = "";
   continuationToken = null;
   tokenHistory = [];
+  searchPrefix = "";
+  searchPrefixInput.value = "";
+  searchClearBtn.classList.add("hidden");
   await loadObjects();
 }
 
@@ -226,10 +250,11 @@ async function loadObjects(append = false) {
       setLoading(true);
       allGridItems = [];
     }
+    const effectivePrefix = searchPrefix ? (currentPrefix + searchPrefix) : (currentPrefix || undefined);
     const result = await api.listObjects(
       currentProfileId,
       currentBucket,
-      currentPrefix || undefined,
+      effectivePrefix,
       continuationToken || undefined
     );
     
@@ -598,6 +623,9 @@ async function navigateToPrefix(prefix: string) {
   currentPrefix = prefix;
   continuationToken = null;
   tokenHistory = [];
+  searchPrefix = "";
+  searchPrefixInput.value = "";
+  searchClearBtn.classList.add("hidden");
   await loadObjects();
 }
 
@@ -741,6 +769,34 @@ async function createBucket() {
   }
 }
 
+// Folder operations
+function openFolderModal() {
+  folderForm.reset();
+  folderModal.classList.add("open");
+}
+
+async function createFolder() {
+  const nameInput = document.getElementById("folder-name") as HTMLInputElement;
+  
+  if (!currentProfileId || !currentBucket || !nameInput.value) return;
+  
+  const folderName = nameInput.value.replace(/^\/+|\/+$/g, '');
+  if (!folderName) {
+    showError("Folder name cannot be empty");
+    return;
+  }
+  
+  const fullKey = currentPrefix ? `${currentPrefix}${folderName}` : folderName;
+  
+  try {
+    await api.createFolder(currentProfileId, currentBucket, fullKey);
+    await loadObjects();
+    closeModal("folder-modal");
+  } catch (err) {
+    showError(`Failed to create folder: ${err}`);
+  }
+}
+
 // File operations
 async function uploadFiles() {
   if (!currentProfileId || !currentBucket) {
@@ -755,14 +811,68 @@ async function uploadFiles() {
   
   if (!files || files.length === 0) return;
   
-  try {
-    setLoading(true);
-    await api.uploadFiles(currentProfileId, currentBucket, currentPrefix, files as string[]);
-    await loadObjects();
-  } catch (err) {
-    showError(`Failed to upload files: ${err}`);
-  } finally {
-    setLoading(false);
+  await uploadFilesWithTasks(files as string[]);
+}
+
+async function uploadDroppedFiles(filePaths: string[]) {
+  if (!currentProfileId || !currentBucket) {
+    showError("Please select a profile and bucket first");
+    return;
+  }
+  
+  if (filePaths.length === 0) return;
+  
+  await uploadFilesWithTasks(filePaths);
+}
+
+const MAX_CONCURRENT_UPLOADS = 20;
+
+async function uploadFilesWithTasks(filePaths: string[]) {
+  if (!currentProfileId || !currentBucket) return;
+  
+  const uploadTasks = filePaths.map(filePath => {
+    const fileName = filePath.split(/[/\\]/).pop() || filePath;
+    return { filePath, task: addTask("upload", fileName) };
+  });
+  
+  const profileId = currentProfileId!;
+  const bucket = currentBucket!;
+  const prefix = currentPrefix;
+  
+  await runWithConcurrency(uploadTasks, MAX_CONCURRENT_UPLOADS, async ({ filePath, task }) => {
+    updateTaskStatus(task.id, "running");
+    try {
+      await api.uploadFile(profileId, bucket, prefix, filePath);
+      updateTaskStatus(task.id, "completed");
+    } catch (err) {
+      updateTaskStatus(task.id, "failed", String(err));
+    }
+  });
+  
+  await loadObjects();
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  const queue = [...items];
+  const running: Promise<void>[] = [];
+  
+  while (queue.length > 0 || running.length > 0) {
+    while (running.length < concurrency && queue.length > 0) {
+      const item = queue.shift()!;
+      const promise = fn(item).finally(() => {
+        const index = running.indexOf(promise);
+        if (index > -1) running.splice(index, 1);
+      });
+      running.push(promise);
+    }
+    
+    if (running.length > 0) {
+      await Promise.race(running);
+    }
   }
 }
 
@@ -814,13 +924,19 @@ async function downloadObject(key: string) {
 async function deleteObject(key: string) {
   if (!currentProfileId || !currentBucket) return;
   
+  const fileName = key.split("/").pop() || key;
+  
   showDeleteConfirm(`Are you sure you want to delete "${key}"?`, async () => {
+    closeModal("delete-modal");
+    const task = addTask("delete", fileName);
+    updateTaskStatus(task.id, "running");
+    
     try {
       await api.deleteObject(currentProfileId!, currentBucket!, key);
+      updateTaskStatus(task.id, "completed");
       await loadObjects();
-      closeModal("delete-modal");
     } catch (err) {
-      showError(`Failed to delete: ${err}`);
+      updateTaskStatus(task.id, "failed", String(err));
     }
   });
 }
@@ -977,6 +1093,153 @@ async function startKeepSync() {
   }
 }
 
+// Task management
+function generateTaskId(): string {
+  return `task-${++taskIdCounter}`;
+}
+
+function addTask(type: "upload" | "delete", fileName: string): Task {
+  const task: Task = {
+    id: generateTaskId(),
+    type,
+    fileName,
+    status: "pending",
+  };
+  tasks.unshift(task);
+  showTaskPanel();
+  renderTasks();
+  return task;
+}
+
+function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
+  const task = tasks.find(t => t.id === taskId);
+  if (task) {
+    task.status = status;
+    if (error) task.error = error;
+    renderTasks();
+  }
+}
+
+function clearCompletedTasks() {
+  tasks = tasks.filter(t => t.status !== "completed" && t.status !== "failed");
+  renderTasks();
+  if (tasks.length === 0) {
+    hideTaskPanel();
+  }
+}
+
+function showTaskPanel() {
+  taskPanel.classList.remove("hidden");
+}
+
+function hideTaskPanel() {
+  taskPanel.classList.add("hidden");
+}
+
+function updateTaskProgress() {
+  const total = tasks.length;
+  const completed = tasks.filter(t => t.status === "completed").length;
+  const failed = tasks.filter(t => t.status === "failed").length;
+  const done = completed + failed;
+  
+  taskProgressText.textContent = `${done} / ${total} completed`;
+  
+  if (total === 0) {
+    taskProgressFill.style.width = "0%";
+    taskProgressFill.classList.remove("has-errors");
+    return;
+  }
+  
+  const percent = (done / total) * 100;
+  taskProgressFill.style.width = `${percent}%`;
+  
+  if (failed > 0) {
+    const successPercent = (completed / total) * 100;
+    taskProgressFill.classList.add("has-errors");
+    taskProgressFill.style.setProperty("--success-percent", `${successPercent}%`);
+  } else {
+    taskProgressFill.classList.remove("has-errors");
+  }
+}
+
+function renderTasks() {
+  updateTaskProgress();
+  
+  if (tasks.length === 0) {
+    taskListEl.innerHTML = '<div class="task-empty">No tasks</div>';
+    return;
+  }
+  
+  taskListEl.innerHTML = tasks.map(task => {
+    const iconClass = task.type === "upload" ? "upload" : "delete";
+    const typeIcon = task.type === "upload" 
+      ? `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>`
+      : `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1z"/></svg>`;
+    
+    let statusIcon = "";
+    let statusText = "";
+    let statusClass = "";
+    
+    switch (task.status) {
+      case "pending":
+        statusText = "Waiting...";
+        break;
+      case "running":
+        statusIcon = '<div class="task-spinner"></div>';
+        statusText = task.type === "upload" ? "Uploading..." : "Deleting...";
+        statusClass = "running";
+        break;
+      case "completed":
+        statusIcon = '<svg class="task-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>';
+        statusText = "Completed";
+        statusClass = "completed";
+        break;
+      case "failed":
+        statusIcon = '<svg class="task-error" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M7.002 11a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM7.1 4.995a.905.905 0 1 1 1.8 0l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 4.995z"/></svg>';
+        statusText = task.error || "Failed";
+        statusClass = "failed";
+        break;
+    }
+    
+    return `
+      <div class="task-item" data-id="${task.id}">
+        <div class="task-icon ${iconClass}">${typeIcon}</div>
+        <div class="task-info">
+          <div class="task-name" title="${escapeHtml(task.fileName)}">${escapeHtml(task.fileName)}</div>
+          <div class="task-status ${statusClass}">${statusText}</div>
+        </div>
+        ${statusIcon}
+      </div>
+    `;
+  }).join("");
+}
+
+// Search functions
+function handleSearchInput() {
+  const value = searchPrefixInput.value;
+  searchClearBtn.classList.toggle("hidden", !value);
+  
+  if (searchTimeout) {
+    clearTimeout(searchTimeout);
+  }
+  
+  searchTimeout = window.setTimeout(() => {
+    searchPrefix = value;
+    continuationToken = null;
+    tokenHistory = [];
+    loadObjects();
+  }, 300);
+}
+
+function clearSearch() {
+  searchPrefixInput.value = "";
+  searchClearBtn.classList.add("hidden");
+  searchPrefix = "";
+  continuationToken = null;
+  tokenHistory = [];
+  loadObjects();
+}
+
 // Helpers
 function setLoading(loading: boolean) {
   isLoading = loading;
@@ -1077,16 +1340,25 @@ function setupEventListeners() {
   document.getElementById("save-profile-btn")!.addEventListener("click", saveProfile);
   document.getElementById("delete-profile-btn")!.addEventListener("click", deleteCurrentProfile);
   
+  // Task panel
+  clearCompletedBtn.addEventListener("click", clearCompletedTasks);
+  closeTaskPanelBtn.addEventListener("click", hideTaskPanel);
+  
   // Bucket operations
   bucketSelect.addEventListener("change", () => {
     if (bucketSelect.value) selectBucket(bucketSelect.value);
   });
+  refreshBucketsBtn.addEventListener("click", loadBuckets);
   
   createBucketBtn.addEventListener("click", openBucketModal);
   document.getElementById("create-bucket-submit-btn")!.addEventListener("click", createBucket);
   
+  createFolderBtn.addEventListener("click", openFolderModal);
+  document.getElementById("create-folder-submit-btn")!.addEventListener("click", createFolder);
+  
   // Navigation
   goBackBtn.addEventListener("click", goToParent);
+  refreshObjectsBtn.addEventListener("click", () => loadObjects());
   
   // View mode toggle
   listViewBtn.addEventListener("click", () => setViewMode("list"));
@@ -1144,6 +1416,10 @@ function setupEventListeners() {
   footerToggle.addEventListener("click", () => footer.classList.toggle("expanded"));
   copyUrlBtn.addEventListener("click", copyPresignedUrl);
   
+  // Search
+  searchPrefixInput.addEventListener("input", handleSearchInput);
+  searchClearBtn.addEventListener("click", clearSearch);
+  
   // Delete confirmation
   document.getElementById("confirm-delete-btn")!.addEventListener("click", async () => {
     if (deleteCallback) await deleteCallback();
@@ -1194,6 +1470,33 @@ function setupTauriEventListeners() {
   
   listen<SyncErrorPayload>("sync-error", (event) => {
     showError(`Sync error: ${event.payload.error}`);
+  });
+  
+  setupDragAndDrop();
+}
+
+function setupDragAndDrop() {
+  const appWindow = getCurrentWebviewWindow();
+  let dragCounter = 0;
+  
+  appWindow.onDragDropEvent((event) => {
+    if (event.payload.type === "over") {
+      dragCounter++;
+      mainContent.classList.add("drag-over");
+    } else if (event.payload.type === "leave") {
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        mainContent.classList.remove("drag-over");
+      }
+    } else if (event.payload.type === "drop") {
+      dragCounter = 0;
+      mainContent.classList.remove("drag-over");
+      const paths = event.payload.paths;
+      if (paths && paths.length > 0) {
+        uploadDroppedFiles(paths);
+      }
+    }
   });
 }
 

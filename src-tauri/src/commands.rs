@@ -131,6 +131,19 @@ pub async fn download_object(
 }
 
 #[tauri::command]
+pub async fn create_folder(
+    profile_id: String,
+    bucket: String,
+    key: String,
+) -> Result<(), String> {
+    let client = get_client_for_profile(&profile_id).await?;
+    client
+        .create_folder(&bucket, &key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn upload_files(
     profile_id: String,
     bucket: String,

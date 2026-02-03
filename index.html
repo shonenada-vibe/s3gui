@@ -32,6 +32,12 @@
           <select id="bucket-select" class="select">
             <option value="">Select a bucket</option>
           </select>
+          <button id="refresh-buckets-btn" class="btn btn-icon" title="Refresh buckets">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+              <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+          </button>
         </div>
         <div class="path-nav">
           <button id="go-back-btn" class="btn btn-icon" title="Go to parent folder" disabled>
@@ -40,6 +46,12 @@
             </svg>
           </button>
           <div class="current-path" id="current-path"></div>
+          <button id="refresh-objects-btn" class="btn btn-icon" title="Refresh objects">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+              <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -64,7 +76,25 @@
           </svg>
           Create Bucket
         </button>
+        <button id="create-folder-btn" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M.5 3l.04.87a1.99 1.99 0 0 0-.342 1.311l.637 7A2 2 0 0 0 2.826 14H9.5a.5.5 0 0 0 0-1H2.826a1 1 0 0 1-.995-.91l-.637-7A1 1 0 0 1 2.19 4h11.62a1 1 0 0 1 .996 1.09L14.54 8.5a.5.5 0 0 0 .998.09l.265-2.91A2 2 0 0 0 13.81 3H9.828a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 6.172 1H2.5a2 2 0 0 0-2 2zm5.672-1a1 1 0 0 1 .707.293L7.586 3H2.19c-.24 0-.47.042-.683.12L1.5 2.98a1 1 0 0 1 1-.98h3.672z"/>
+            <path d="M13.5 10a.5.5 0 0 1 .5.5V12h1.5a.5.5 0 0 1 0 1H14v1.5a.5.5 0 0 1-1 0V13h-1.5a.5.5 0 0 1 0-1H13v-1.5a.5.5 0 0 1 .5-.5z"/>
+          </svg>
+          Create Folder
+        </button>
         <div class="toolbar-spacer"></div>
+        <div class="search-box">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+          </svg>
+          <input type="text" id="search-prefix" class="input search-input" placeholder="Search by prefix...">
+          <button id="search-clear-btn" class="btn btn-icon search-clear hidden" title="Clear search">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </button>
+        </div>
         <button id="sync-btn" class="btn btn-secondary">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
@@ -147,6 +177,32 @@
         </button>
       </div>
     </main>
+
+    <!-- Task Panel -->
+    <aside class="task-panel hidden" id="task-panel">
+      <div class="task-panel-header">
+        <h3>Tasks</h3>
+        <div class="task-panel-actions">
+          <button id="clear-completed-btn" class="btn btn-small btn-secondary" title="Clear completed">Clear</button>
+          <button id="close-task-panel-btn" class="btn btn-icon btn-small" title="Close">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="task-progress-container" id="task-progress-container">
+        <div class="task-progress-info">
+          <span id="task-progress-text">0 / 0 completed</span>
+        </div>
+        <div class="task-progress-bar">
+          <div class="task-progress-fill" id="task-progress-fill"></div>
+        </div>
+      </div>
+      <div class="task-list" id="task-list">
+        <!-- Task items will be rendered here -->
+      </div>
+    </aside>
   </div>
 
   <!-- Footer -->
@@ -249,6 +305,34 @@
       <div class="modal-footer">
         <button class="btn btn-secondary modal-close" data-modal="bucket-modal">Cancel</button>
         <button class="btn btn-primary" id="create-bucket-submit-btn">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Folder Modal -->
+  <div class="modal" id="folder-modal">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Create Folder</h3>
+        <button class="btn btn-icon modal-close" data-modal="folder-modal">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="folder-form">
+          <div class="form-group">
+            <label for="folder-name">Folder Name</label>
+            <input type="text" id="folder-name" class="input" required placeholder="my-folder">
+            <span class="form-hint">Folder name cannot contain leading or trailing slashes.</span>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close" data-modal="folder-modal">Cancel</button>
+        <button class="btn btn-primary" id="create-folder-submit-btn">Create</button>
       </div>
     </div>
   </div>

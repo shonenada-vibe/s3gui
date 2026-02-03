@@ -87,3 +87,14 @@ export interface SyncErrorPayload {
   sync_id: string;
   error: string;
 }
+
+export type TaskType = "upload" | "delete";
+export type TaskStatus = "pending" | "running" | "completed" | "failed";
+
+export interface Task {
+  id: string;
+  type: TaskType;
+  fileName: string;
+  status: TaskStatus;
+  error?: string;
+}

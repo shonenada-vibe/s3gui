@@ -54,6 +54,14 @@ export async function listObjects(
   });
 }
 
+export async function createFolder(
+  profileId: string,
+  bucket: string,
+  key: string
+): Promise<void> {
+  return invoke("create_folder", { profileId, bucket, key });
+}
+
 export async function downloadObject(
   profileId: string,
   bucket: string,
@@ -61,6 +69,15 @@ export async function downloadObject(
   localPath: string
 ): Promise<void> {
   return invoke("download_object", { profileId, bucket, key, localPath });
+}
+
+export async function uploadFile(
+  profileId: string,
+  bucket: string,
+  prefix: string,
+  filePath: string
+): Promise<void> {
+  return invoke("upload_files", { profileId, bucket, prefix, filePaths: [filePath] });
 }
 
 export async function uploadFiles(
