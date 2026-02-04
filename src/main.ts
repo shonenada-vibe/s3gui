@@ -15,6 +15,7 @@ import type {
   SyncErrorPayload,
   Task,
   TaskStatus,
+  TaskType,
 } from "./types";
 
 // State
@@ -41,6 +42,8 @@ let searchTimeout: number | null = null;
 let tasks: Task[] = [];
 let taskIdCounter = 0;
 let selectedKeys: Set<string> = new Set();
+let sortField: "name" | "size" | "modified" = "name";
+let sortDirection: "asc" | "desc" = "asc";
 
 // DOM Elements
 const profilesList = document.getElementById("profiles-list")!;
@@ -140,6 +143,7 @@ async function init() {
   setupKeyboardShortcuts();
   setupTauriEventListeners();
   addProviderAndStyleDropdowns();
+  updateSortIndicators();
   await restoreLastSelection();
 }
 
@@ -317,16 +321,36 @@ function renderObjects(append = false) {
   currentPathEl.textContent = currentPrefix ? `/ ${currentPrefix}` : "/";
   goBackBtn.disabled = !currentPrefix;
   
-  const newItems = [
-    ...commonPrefixes.map(prefix => ({
-      key: prefix,
-      size: 0,
-      last_modified: undefined,
-      etag: undefined,
-      is_folder: true,
-    })),
-    ...objects.filter(o => !o.is_folder),
-  ];
+  const folders = commonPrefixes.map(prefix => ({
+    key: prefix,
+    size: 0,
+    last_modified: undefined,
+    etag: undefined,
+    is_folder: true,
+  }));
+  
+  const files = objects.filter(o => !o.is_folder);
+  
+  // Sort files (folders always first)
+  const sortedFiles = [...files].sort((a, b) => {
+    let comparison = 0;
+    switch (sortField) {
+      case "name":
+        comparison = a.key.localeCompare(b.key);
+        break;
+      case "size":
+        comparison = a.size - b.size;
+        break;
+      case "modified":
+        const aTime = a.last_modified ? new Date(a.last_modified).getTime() : 0;
+        const bTime = b.last_modified ? new Date(b.last_modified).getTime() : 0;
+        comparison = aTime - bTime;
+        break;
+    }
+    return sortDirection === "asc" ? comparison : -comparison;
+  });
+  
+  const newItems = [...folders, ...sortedFiles];
   
   if (viewMode === "list") {
     paginationEl.classList.remove("hidden");
@@ -420,7 +444,7 @@ function renderGridView(allItems: { key: string; size: number; last_modified?: s
       thumbnailContent = `<span class="placeholder">📁</span>`;
     } else if (cachedThumb) {
       thumbnailContent = isVideo 
-        ? `<video src="${cachedThumb}" preload="metadata" muted></video><span class="video-icon">▶ VIDEO</span>`
+        ? `<video src="${cachedThumb}" preload="auto" muted playsinline></video><span class="video-icon">▶ VIDEO</span>`
         : `<img src="${cachedThumb}" alt="${escapeHtml(name)}">`;
     } else if (isPreviewable) {
       thumbnailContent = `<div class="loading-spinner"></div>`;
@@ -444,9 +468,18 @@ function renderGridView(allItems: { key: string; size: number; last_modified?: s
   // Set up cached video thumbnails to show first frame
   objectGrid.querySelectorAll(".grid-item-thumbnail video").forEach((video) => {
     const videoEl = video as HTMLVideoElement;
-    videoEl.onloadedmetadata = () => {
+    videoEl.style.opacity = "0";
+    videoEl.style.transition = "opacity 0.2s";
+    videoEl.onloadeddata = () => {
       videoEl.currentTime = 0.1;
     };
+    videoEl.onseeked = () => {
+      videoEl.style.opacity = "1";
+    };
+    // Trigger load if already has src
+    if (videoEl.src) {
+      videoEl.load();
+    }
   });
   
   // Load thumbnails for previewable items
@@ -471,7 +504,7 @@ function createGridItemHtml(obj: { key: string; size: number; last_modified?: st
     thumbnailContent = `<span class="placeholder">📁</span>`;
   } else if (cachedThumb) {
     thumbnailContent = isVideo 
-      ? `<video src="${cachedThumb}" preload="metadata" muted></video><span class="video-icon">▶ VIDEO</span>`
+      ? `<video src="${cachedThumb}" preload="auto" muted playsinline></video><span class="video-icon">▶ VIDEO</span>`
       : `<img src="${cachedThumb}" alt="${escapeHtml(name)}">`;
   } else if (isPreviewable) {
     thumbnailContent = `<div class="loading-spinner"></div>`;
@@ -514,11 +547,19 @@ function appendGridItems(items: { key: string; size: number; last_modified?: str
     if (isVideoFile(item.key)) {
       const gridItem = objectGrid.querySelector(`[data-key="${CSS.escape(item.key)}"]`);
       if (gridItem) {
-        const video = gridItem.querySelector("video");
+        const video = gridItem.querySelector("video") as HTMLVideoElement | null;
         if (video) {
-          video.onloadedmetadata = () => {
+          video.style.opacity = "0";
+          video.style.transition = "opacity 0.2s";
+          video.onloadeddata = () => {
             video.currentTime = 0.1;
           };
+          video.onseeked = () => {
+            video.style.opacity = "1";
+          };
+          if (video.src) {
+            video.load();
+          }
         }
       }
     }
@@ -596,12 +637,22 @@ async function loadGridThumbnails(items: { key: string }[]) {
           const isVideo = previewData.content_type.startsWith("video/");
           if (isVideo) {
             const video = document.createElement("video");
-            video.src = dataUrl;
             video.muted = true;
-            video.preload = "metadata";
-            video.onloadedmetadata = () => {
-              video.currentTime = 0.1; // Seek to first frame
+            video.preload = "auto";
+            video.playsInline = true;
+            
+            video.onloadeddata = () => {
+              video.currentTime = 0.1;
             };
+            
+            video.onseeked = () => {
+              video.style.opacity = "1";
+            };
+            
+            video.style.opacity = "0";
+            video.style.transition = "opacity 0.2s";
+            video.src = dataUrl;
+            
             thumbContainer.innerHTML = "";
             thumbContainer.appendChild(video);
             const icon = document.createElement("span");
@@ -1028,11 +1079,24 @@ async function previewObject(key: string) {
     const previewData = await api.getObjectPreview(currentProfileId, currentBucket, key);
     console.log("[Preview] Preview data received, content_type:", previewData.content_type, "data length:", previewData.data.length);
     
-    const dataUrl = `data:${previewData.content_type};base64,${previewData.data}`;
+    // Determine actual content type - use extension as fallback for application/octet-stream
+    let contentType = previewData.content_type;
+    if (contentType === "application/octet-stream") {
+      const ext = key.toLowerCase().split(".").pop();
+      const extMimeMap: Record<string, string> = {
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+        webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", ico: "image/x-icon",
+        mp4: "video/mp4", webm: "video/webm", ogg: "video/ogg", mov: "video/quicktime",
+        avi: "video/x-msvideo", mkv: "video/x-matroska",
+      };
+      contentType = extMimeMap[ext || ""] || contentType;
+    }
+    
+    const dataUrl = `data:${contentType};base64,${previewData.data}`;
     
     container.innerHTML = "";
     
-    if (previewData.content_type.startsWith("image/")) {
+    if (contentType.startsWith("image/")) {
       console.log("[Preview] Creating image element");
       const img = document.createElement("img");
       img.alt = "Preview";
@@ -1045,7 +1109,7 @@ async function previewObject(key: string) {
       };
       img.src = dataUrl;
       container.appendChild(img);
-    } else if (previewData.content_type.startsWith("video/")) {
+    } else if (contentType.startsWith("video/")) {
       console.log("[Preview] Creating video element with play button");
       
       // Create wrapper for video and play button
@@ -1080,7 +1144,7 @@ async function previewObject(key: string) {
       wrapper.appendChild(playButton);
       container.appendChild(wrapper);
     } else {
-      container.innerHTML = `<div class="loading">Unsupported content type: ${previewData.content_type}</div>`;
+      container.innerHTML = `<div class="loading">Unsupported content type: ${contentType}</div>`;
     }
   } catch (err) {
     console.error("[Preview] Error fetching preview:", err);
@@ -1103,8 +1167,11 @@ async function syncWithLocal() {
   
   if (!folder) return;
   
+  const folderName = (folder as string).split(/[/\\]/).pop() || "folder";
+  const task = addTask("sync", folderName);
+  updateTaskStatus(task.id, "running");
+  
   try {
-    setLoading(true);
     const result = await api.syncFolder(
       currentProfileId,
       currentBucket,
@@ -1112,12 +1179,11 @@ async function syncWithLocal() {
       folder as string,
       "local_to_remote"
     );
+    updateTaskStatus(task.id, "completed");
     showError(`Sync complete: ${result.uploaded} uploaded, ${result.downloaded} downloaded, ${result.skipped} skipped`);
     await loadObjects();
   } catch (err) {
-    showError(`Sync failed: ${err}`);
-  } finally {
-    setLoading(false);
+    updateTaskStatus(task.id, "failed", String(err));
   }
 }
 
@@ -1134,6 +1200,10 @@ async function startKeepSync() {
   
   if (!folder) return;
   
+  const folderName = (folder as string).split(/[/\\]/).pop() || "folder";
+  const task = addTask("keepsync", folderName);
+  updateTaskStatus(task.id, "running");
+  
   try {
     const syncId = await api.startKeepSync(
       currentProfileId,
@@ -1141,9 +1211,10 @@ async function startKeepSync() {
       currentPrefix,
       folder as string
     );
+    task.syncId = syncId;
     showError(`KeepSync started: ${syncId}`);
   } catch (err) {
-    showError(`Failed to start KeepSync: ${err}`);
+    updateTaskStatus(task.id, "failed", String(err));
   }
 }
 
@@ -1165,7 +1236,7 @@ function scheduleRender() {
   }
 }
 
-function addTask(type: "upload" | "delete", fileName: string): Task {
+function addTask(type: TaskType, fileName: string): Task {
   const task: Task = {
     id: generateTaskId(),
     type,
@@ -1178,7 +1249,7 @@ function addTask(type: "upload" | "delete", fileName: string): Task {
   return task;
 }
 
-function addTasksBatch(type: "upload" | "delete", fileNames: string[]): Task[] {
+function addTasksBatch(type: TaskType, fileNames: string[]): Task[] {
   const newTasks = fileNames.map(fileName => ({
     id: generateTaskId(),
     type,
@@ -1254,14 +1325,33 @@ function renderTasks() {
   const hiddenCount = tasks.length - visibleTasks.length;
   
   let html = visibleTasks.map(task => {
-    const iconClass = task.type === "upload" ? "upload" : "delete";
-    const typeIcon = task.type === "upload" 
-      ? `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>`
-      : `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1z"/></svg>`;
+    const iconClass = task.type;
+    let typeIcon: string;
+    switch (task.type) {
+      case "upload":
+        typeIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>`;
+        break;
+      case "delete":
+        typeIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1z"/></svg>`;
+        break;
+      case "sync":
+        typeIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/><path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/></svg>`;
+        break;
+      case "keepsync":
+        typeIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>`;
+        break;
+    }
     
     let statusIcon = "";
     let statusText = "";
     let statusClass = "";
+    
+    const runningTextMap: Record<TaskType, string> = {
+      upload: "Uploading...",
+      delete: "Deleting...",
+      sync: "Syncing...",
+      keepsync: "Watching...",
+    };
     
     switch (task.status) {
       case "pending":
@@ -1269,7 +1359,7 @@ function renderTasks() {
         break;
       case "running":
         statusIcon = '<div class="task-spinner"></div>';
-        statusText = task.type === "upload" ? "Uploading..." : "Deleting...";
+        statusText = runningTextMap[task.type];
         statusClass = "running";
         break;
       case "completed":
@@ -1327,6 +1417,32 @@ function clearSearch() {
   continuationToken = null;
   tokenHistory = [];
   loadObjects();
+}
+
+// Sorting
+function setSortField(field: "name" | "size" | "modified") {
+  if (sortField === field) {
+    sortDirection = sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    sortField = field;
+    sortDirection = "asc";
+  }
+  updateSortIndicators();
+  renderObjects();
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll(".sortable").forEach(th => {
+    const field = (th as HTMLElement).dataset.sort;
+    const icon = th.querySelector(".sort-icon");
+    if (icon) {
+      if (field === sortField) {
+        icon.textContent = sortDirection === "asc" ? "▲" : "▼";
+      } else {
+        icon.textContent = "";
+      }
+    }
+  });
 }
 
 // Helpers
@@ -1533,6 +1649,14 @@ function setupEventListeners() {
   // View mode toggle
   listViewBtn.addEventListener("click", () => setViewMode("list"));
   gridViewBtn.addEventListener("click", () => setViewMode("grid"));
+  
+  // Sort headers
+  document.querySelectorAll(".sortable").forEach(th => {
+    th.addEventListener("click", () => {
+      const field = (th as HTMLElement).dataset.sort as "name" | "size" | "modified";
+      if (field) setSortField(field);
+    });
+  });
   
   // Object list clicks
   objectList.addEventListener("click", (e) => {

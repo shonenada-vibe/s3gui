@@ -319,6 +319,21 @@ body {
   accent-color: var(--accent-blue);
 }
 
+.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable:hover {
+  background-color: var(--bg-hover);
+}
+
+.sort-icon {
+  font-size: 10px;
+  margin-left: 4px;
+  color: var(--accent-blue);
+}
+
 .col-name {
   width: calc(45% - 32px);
 }
@@ -802,7 +817,12 @@ body {
 }
 
 .modal-large {
-  max-width: 800px;
+  max-width: 90vw;
+  max-height: 90vh;
+  width: 1200px;
+}
+
+.modal-large .modal-body {
   max-height: 80vh;
 }
 
@@ -1005,6 +1025,14 @@ body {
   color: var(--accent-red);
 }
 
+.task-icon.sync {
+  color: var(--accent-green);
+}
+
+.task-icon.keepsync {
+  color: #9b59b6;
+}
+
 .task-info {
   flex: 1;
   min-width: 0;
@@ -1096,4 +1124,129 @@ body {
   color: var(--accent-blue);
   z-index: 100;
   pointer-events: none;
+}
+
+/* Responsive Design */
+@media (max-width: 900px) {
+  :root {
+    --sidebar-width: 180px;
+  }
+  
+  .toolbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--toolbar-height);
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  
+  .toolbar .btn {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  
+  .toolbar .btn svg {
+    display: none;
+  }
+  
+  .search-box .search-input {
+    width: 140px;
+  }
+  
+  .search-box .search-input:focus {
+    width: 180px;
+  }
+  
+  .col-modified {
+    display: none;
+  }
+  
+  .col-name {
+    width: calc(60% - 32px);
+  }
+  
+  .col-size {
+    width: 20%;
+  }
+  
+  .col-actions {
+    width: 20%;
+  }
+}
+
+@media (max-width: 700px) {
+  :root {
+    --sidebar-width: 140px;
+  }
+  
+  .sidebar-header h2 {
+    font-size: 12px;
+  }
+  
+  .profile-item {
+    padding: 8px 10px;
+    font-size: 11px;
+  }
+  
+  .toolbar .btn span,
+  .toolbar .btn:not(.btn-icon) {
+    font-size: 11px;
+  }
+  
+  .bucket-selector label {
+    display: none;
+  }
+  
+  .search-box {
+    display: none;
+  }
+  
+  .col-size {
+    display: none;
+  }
+  
+  .col-name {
+    width: calc(70% - 32px);
+  }
+  
+  .col-actions {
+    width: 30%;
+  }
+  
+  .task-panel {
+    width: 200px;
+  }
+}
+
+@media (max-width: 500px) {
+  :root {
+    --sidebar-width: 0px;
+  }
+  
+  .sidebar {
+    display: none;
+  }
+  
+  .toolbar {
+    padding: 6px 8px;
+  }
+  
+  .toolbar .btn:not(.btn-icon) {
+    padding: 6px 8px;
+  }
+  
+  .main-header {
+    padding: 8px;
+  }
+  
+  .path-nav {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  .current-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

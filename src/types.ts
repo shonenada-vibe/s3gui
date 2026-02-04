@@ -98,7 +98,7 @@ export interface SyncErrorPayload {
   error: string;
 }
 
-export type TaskType = "upload" | "delete";
+export type TaskType = "upload" | "delete" | "sync" | "keepsync";
 export type TaskStatus = "pending" | "running" | "completed" | "failed";
 
 export interface Task {
@@ -107,4 +107,5 @@ export interface Task {
   fileName: string;
   status: TaskStatus;
   error?: string;
+  syncId?: string;
 }
