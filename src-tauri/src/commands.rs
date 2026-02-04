@@ -2,8 +2,8 @@ use tauri::State;
 
 use crate::config::{self, AddressingStyle, Profile};
 use crate::s3_client::{
-    BucketInfo, ListObjectsResult, ObjectMetadata, S3Client, S3ClientBuilder, SyncDirection,
-    SyncResult,
+    BucketInfo, DeleteObjectsResult, ListObjectsResult, ObjectMetadata, S3Client, S3ClientBuilder,
+    SyncDirection, SyncResult,
 };
 use crate::sync::{SyncManager, SyncState};
 
@@ -196,6 +196,19 @@ pub async fn delete_object(
     let client = get_client_for_profile(&profile_id).await?;
     client
         .delete_object(&bucket, &key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_objects(
+    profile_id: String,
+    bucket: String,
+    keys: Vec<String>,
+) -> Result<DeleteObjectsResult, String> {
+    let client = get_client_for_profile(&profile_id).await?;
+    client
+        .delete_objects(&bucket, &keys)
         .await
         .map_err(|e| e.to_string())
 }

@@ -6,6 +6,7 @@ import type {
   ObjectMetadata,
   SyncResult,
   SyncState,
+  DeleteObjectsResult,
 } from "./types";
 
 // Profile functions
@@ -104,6 +105,14 @@ export async function deleteObject(
   key: string
 ): Promise<void> {
   return invoke("delete_object", { profileId, bucket, key });
+}
+
+export async function deleteObjects(
+  profileId: string,
+  bucket: string,
+  keys: string[]
+): Promise<DeleteObjectsResult> {
+  return invoke("delete_objects", { profileId, bucket, keys });
 }
 
 export async function presignUrl(

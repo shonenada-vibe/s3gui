@@ -40,6 +40,7 @@ let searchPrefix = "";
 let searchTimeout: number | null = null;
 let tasks: Task[] = [];
 let taskIdCounter = 0;
+let selectedKeys: Set<string> = new Set();
 
 // DOM Elements
 const profilesList = document.getElementById("profiles-list")!;
@@ -81,6 +82,9 @@ const clearCompletedBtn = document.getElementById("clear-completed-btn")!;
 const closeTaskPanelBtn = document.getElementById("close-task-panel-btn")!;
 const taskProgressText = document.getElementById("task-progress-text")!;
 const taskProgressFill = document.getElementById("task-progress-fill")!;
+const deleteSelectedBtn = document.getElementById("delete-selected-btn")!;
+const selectedCountEl = document.getElementById("selected-count")!;
+const selectAllCheckbox = document.getElementById("select-all-checkbox") as HTMLInputElement;
 
 // Modals
 const profileModal = document.getElementById("profile-modal")!;
@@ -109,6 +113,26 @@ const providers: { value: Provider; label: string }[] = [
   { value: "baidu_b_o_s", label: "Baidu BOS" },
 ];
 
+// Storage keys for persistence
+const STORAGE_KEY_PROFILE = "s3gui_last_profile";
+const STORAGE_KEY_BUCKET = "s3gui_last_bucket";
+
+function saveLastSelection() {
+  if (currentProfileId) {
+    localStorage.setItem(STORAGE_KEY_PROFILE, currentProfileId);
+  }
+  if (currentBucket) {
+    localStorage.setItem(STORAGE_KEY_BUCKET, currentBucket);
+  }
+}
+
+function getLastSelection(): { profileId: string | null; bucket: string | null } {
+  return {
+    profileId: localStorage.getItem(STORAGE_KEY_PROFILE),
+    bucket: localStorage.getItem(STORAGE_KEY_BUCKET),
+  };
+}
+
 // Initialize
 async function init() {
   await loadProfiles();
@@ -116,6 +140,19 @@ async function init() {
   setupKeyboardShortcuts();
   setupTauriEventListeners();
   addProviderAndStyleDropdowns();
+  await restoreLastSelection();
+}
+
+async function restoreLastSelection() {
+  const { profileId, bucket } = getLastSelection();
+  
+  if (profileId && profiles.some(p => p.id === profileId)) {
+    await selectProfile(profileId);
+    
+    if (bucket && buckets.some(b => b.name === bucket)) {
+      await selectBucket(bucket);
+    }
+  }
 }
 
 function addProviderAndStyleDropdowns() {
@@ -201,6 +238,7 @@ async function selectProfile(id: string) {
   continuationToken = null;
   tokenHistory = [];
   
+  saveLastSelection();
   renderProfiles();
   await loadBuckets();
   renderObjects();
@@ -239,6 +277,8 @@ async function selectBucket(name: string) {
   searchPrefix = "";
   searchPrefixInput.value = "";
   searchClearBtn.classList.add("hidden");
+  clearSelection();
+  saveLastSelection();
   await loadObjects();
 }
 
@@ -310,10 +350,13 @@ function renderListView(allItems: { key: string; size: number; last_modified?: s
   if (allItems.length === 0) {
     objectList.innerHTML = "";
     emptyStateList.style.display = "flex";
+    updateSelectAllCheckbox();
     return;
   }
   
   emptyStateList.style.display = "none";
+  
+  const selectableItems = allItems.filter(obj => !obj.is_folder);
   
   objectList.innerHTML = allItems.map(obj => {
     const name = obj.is_folder 
@@ -322,9 +365,13 @@ function renderListView(allItems: { key: string; size: number; last_modified?: s
     const size = obj.is_folder ? "-" : formatSize(obj.size);
     const modified = obj.last_modified ? formatDate(obj.last_modified) : "-";
     const isPreviewable = isMediaFile(obj.key);
+    const isSelected = selectedKeys.has(obj.key);
     
     return `
-      <tr class="object-row ${obj.is_folder ? "folder" : ""}" data-key="${escapeHtml(obj.key)}" data-is-folder="${obj.is_folder}">
+      <tr class="object-row ${obj.is_folder ? "folder" : ""} ${isSelected ? "selected" : ""}" data-key="${escapeHtml(obj.key)}" data-is-folder="${obj.is_folder}">
+        <td class="col-checkbox">
+          ${obj.is_folder ? "" : `<input type="checkbox" class="object-checkbox" data-key="${escapeHtml(obj.key)}" ${isSelected ? "checked" : ""}>`}
+        </td>
         <td class="col-name">
           <span class="icon">${obj.is_folder ? "📁" : "📄"}</span>
           <span class="name">${escapeHtml(name)}</span>
@@ -342,6 +389,8 @@ function renderListView(allItems: { key: string; size: number; last_modified?: s
       </tr>
     `;
   }).join("");
+  
+  updateSelectAllCheckbox();
 }
 
 function renderGridView(allItems: { key: string; size: number; last_modified?: string; etag?: string; is_folder: boolean }[]) {
@@ -626,6 +675,7 @@ async function navigateToPrefix(prefix: string) {
   searchPrefix = "";
   searchPrefixInput.value = "";
   searchClearBtn.classList.add("hidden");
+  clearSelection();
   await loadObjects();
 }
 
@@ -646,6 +696,7 @@ async function goToParent() {
   
   continuationToken = null;
   tokenHistory = [];
+  clearSelection();
   await loadObjects();
 }
 
@@ -830,16 +881,19 @@ const MAX_CONCURRENT_UPLOADS = 20;
 async function uploadFilesWithTasks(filePaths: string[]) {
   if (!currentProfileId || !currentBucket) return;
   
-  const uploadTasks = filePaths.map(filePath => {
-    const fileName = filePath.split(/[/\\]/).pop() || filePath;
-    return { filePath, task: addTask("upload", fileName) };
-  });
+  const fileNames = filePaths.map(filePath => filePath.split(/[/\\]/).pop() || filePath);
+  const createdTasks = addTasksBatch("upload", fileNames);
+  
+  const uploadItems = filePaths.map((filePath, index) => ({
+    filePath,
+    task: createdTasks[index],
+  }));
   
   const profileId = currentProfileId!;
   const bucket = currentBucket!;
   const prefix = currentPrefix;
   
-  await runWithConcurrency(uploadTasks, MAX_CONCURRENT_UPLOADS, async ({ filePath, task }) => {
+  await runWithConcurrency(uploadItems, MAX_CONCURRENT_UPLOADS, async ({ filePath, task }) => {
     updateTaskStatus(task.id, "running");
     try {
       await api.uploadFile(profileId, bucket, prefix, filePath);
@@ -1094,8 +1148,21 @@ async function startKeepSync() {
 }
 
 // Task management
+const MAX_VISIBLE_TASKS = 100;
+let renderScheduled = false;
+
 function generateTaskId(): string {
   return `task-${++taskIdCounter}`;
+}
+
+function scheduleRender() {
+  if (!renderScheduled) {
+    renderScheduled = true;
+    requestAnimationFrame(() => {
+      renderScheduled = false;
+      renderTasks();
+    });
+  }
 }
 
 function addTask(type: "upload" | "delete", fileName: string): Task {
@@ -1107,8 +1174,21 @@ function addTask(type: "upload" | "delete", fileName: string): Task {
   };
   tasks.unshift(task);
   showTaskPanel();
-  renderTasks();
+  scheduleRender();
   return task;
+}
+
+function addTasksBatch(type: "upload" | "delete", fileNames: string[]): Task[] {
+  const newTasks = fileNames.map(fileName => ({
+    id: generateTaskId(),
+    type,
+    fileName,
+    status: "pending" as TaskStatus,
+  }));
+  tasks.unshift(...newTasks);
+  showTaskPanel();
+  scheduleRender();
+  return newTasks;
 }
 
 function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
@@ -1116,7 +1196,7 @@ function updateTaskStatus(taskId: string, status: TaskStatus, error?: string) {
   if (task) {
     task.status = status;
     if (error) task.error = error;
-    renderTasks();
+    scheduleRender();
   }
 }
 
@@ -1170,7 +1250,10 @@ function renderTasks() {
     return;
   }
   
-  taskListEl.innerHTML = tasks.map(task => {
+  const visibleTasks = tasks.slice(0, MAX_VISIBLE_TASKS);
+  const hiddenCount = tasks.length - visibleTasks.length;
+  
+  let html = visibleTasks.map(task => {
     const iconClass = task.type === "upload" ? "upload" : "delete";
     const typeIcon = task.type === "upload" 
       ? `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/></svg>`
@@ -1212,6 +1295,12 @@ function renderTasks() {
       </div>
     `;
   }).join("");
+  
+  if (hiddenCount > 0) {
+    html += `<div class="task-hidden-notice">... and ${hiddenCount} more tasks</div>`;
+  }
+  
+  taskListEl.innerHTML = html;
 }
 
 // Search functions
@@ -1316,6 +1405,87 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// Selection functions
+function toggleObjectSelection(key: string, selected: boolean) {
+  if (selected) {
+    selectedKeys.add(key);
+  } else {
+    selectedKeys.delete(key);
+  }
+  updateSelectionUI();
+}
+
+function selectAllObjects(selected: boolean) {
+  const selectableItems = [...objects.filter(o => !o.is_folder)];
+  if (selected) {
+    selectableItems.forEach(obj => selectedKeys.add(obj.key));
+  } else {
+    selectableItems.forEach(obj => selectedKeys.delete(obj.key));
+  }
+  updateSelectionUI();
+  renderObjects();
+}
+
+function clearSelection() {
+  selectedKeys.clear();
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  const count = selectedKeys.size;
+  selectedCountEl.textContent = String(count);
+  if (count > 0) {
+    deleteSelectedBtn.classList.remove("hidden");
+  } else {
+    deleteSelectedBtn.classList.add("hidden");
+  }
+  updateSelectAllCheckbox();
+}
+
+function updateSelectAllCheckbox() {
+  const selectableItems = objects.filter(o => !o.is_folder);
+  if (selectableItems.length === 0) {
+    selectAllCheckbox.checked = false;
+    selectAllCheckbox.indeterminate = false;
+    return;
+  }
+  const selectedCount = selectableItems.filter(o => selectedKeys.has(o.key)).length;
+  selectAllCheckbox.checked = selectedCount === selectableItems.length;
+  selectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < selectableItems.length;
+}
+
+async function deleteSelectedObjects() {
+  if (!currentProfileId || !currentBucket || selectedKeys.size === 0) return;
+  
+  const keys = Array.from(selectedKeys);
+  const count = keys.length;
+  
+  showDeleteConfirm(`Are you sure you want to delete ${count} selected object${count > 1 ? "s" : ""}?`, async () => {
+    closeModal("delete-modal");
+    
+    const task = addTask("delete", `${count} objects`);
+    updateTaskStatus(task.id, "running");
+    
+    try {
+      const result = await api.deleteObjects(currentProfileId!, currentBucket!, keys);
+      
+      if (result.errors.length > 0) {
+        result.errors.forEach(err => {
+          showError(`Failed to delete ${err.key}: ${err.message}`);
+        });
+        updateTaskStatus(task.id, "failed", `${result.errors.length} errors`);
+      } else {
+        updateTaskStatus(task.id, "completed");
+      }
+      
+      clearSelection();
+      await loadObjects();
+    } catch (err) {
+      updateTaskStatus(task.id, "failed", String(err));
+    }
+  });
+}
+
 // Event Listeners
 function setupEventListeners() {
   // Profile list clicks
@@ -1373,6 +1543,14 @@ function setupEventListeners() {
     const key = row.dataset.key!;
     const isFolder = row.dataset.isFolder === "true";
     
+    // Handle checkbox clicks
+    if (target.classList.contains("object-checkbox")) {
+      const checkbox = target as HTMLInputElement;
+      toggleObjectSelection(key, checkbox.checked);
+      row.classList.toggle("selected", checkbox.checked);
+      return;
+    }
+    
     if (target.closest(".download-btn")) {
       downloadObject(key);
     } else if (target.closest(".presign-btn")) {
@@ -1385,6 +1563,14 @@ function setupEventListeners() {
       navigateToPrefix(key);
     }
   });
+  
+  // Select all checkbox
+  selectAllCheckbox.addEventListener("change", () => {
+    selectAllObjects(selectAllCheckbox.checked);
+  });
+  
+  // Delete selected button
+  deleteSelectedBtn.addEventListener("click", deleteSelectedObjects);
   
   // Object grid clicks
   objectGrid.addEventListener("click", (e) => {

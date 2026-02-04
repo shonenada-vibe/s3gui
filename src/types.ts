@@ -60,6 +60,16 @@ export interface SyncResult {
   skipped: number;
 }
 
+export interface DeleteError {
+  key: string;
+  message: string;
+}
+
+export interface DeleteObjectsResult {
+  deleted: number;
+  errors: DeleteError[];
+}
+
 export interface SyncState {
   sync_id: string;
   profile_id: string;

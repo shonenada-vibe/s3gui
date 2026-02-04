@@ -32,6 +32,7 @@ pub fn run() {
             upload_files,
             upload_folder,
             delete_object,
+            delete_objects,
             presign_url,
             sync_folder,
             get_object_content_type,

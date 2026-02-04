@@ -83,6 +83,18 @@ pub struct SyncResult {
     pub skipped: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteError {
+    pub key: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteObjectsResult {
+    pub deleted: u64,
+    pub errors: Vec<DeleteError>,
+}
+
 pub struct S3Client {
     client: aws_sdk_s3::Client,
     region: String,
@@ -365,6 +377,48 @@ impl S3Client {
             .context("Failed to delete object")?;
 
         Ok(())
+    }
+
+    pub async fn delete_objects(&self, bucket: &str, keys: &[String]) -> Result<DeleteObjectsResult> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+
+        if keys.is_empty() {
+            return Ok(DeleteObjectsResult {
+                deleted: 0,
+                errors: vec![],
+            });
+        }
+
+        let objects: Vec<ObjectIdentifier> = keys
+            .iter()
+            .filter_map(|key| ObjectIdentifier::builder().key(key).build().ok())
+            .collect();
+
+        let delete = Delete::builder()
+            .set_objects(Some(objects))
+            .build()
+            .context("Failed to build delete request")?;
+
+        let resp = self
+            .client
+            .delete_objects()
+            .bucket(bucket)
+            .delete(delete)
+            .send()
+            .await
+            .context("Failed to delete objects")?;
+
+        let deleted = resp.deleted().len() as u64;
+        let errors: Vec<DeleteError> = resp
+            .errors()
+            .iter()
+            .map(|e| DeleteError {
+                key: e.key().unwrap_or_default().to_string(),
+                message: e.message().unwrap_or_default().to_string(),
+            })
+            .collect();
+
+        Ok(DeleteObjectsResult { deleted, errors })
     }
 
     pub async fn presign_get_url(
